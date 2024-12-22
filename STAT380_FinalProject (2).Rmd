@@ -1,0 +1,933 @@
+---
+title: "STAT380_FinalProject"
+author: 
+  - "Juan Mateo Gallino"
+  - "Will Arsenault"
+  - "Min Goo Sim"
+date: "2024-12-16"
+output: html_document
+---
+
+## Front Matter
+```{r}
+# Load required libraries
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(stringdist)
+library(fuzzyjoin)
+library(tidyr)
+library(tidyverse)
+
+# Load the datasets
+player1 <- read.csv("~/Downloads/CODGames_p1_380.csv")
+player2 <- read.csv("~/Downloads/CODGames_p2_380.csv")
+maps <- read.csv("~/Downloads/CODMaps.csv")
+game_modes <- read.csv("~/Downloads/CODMaps.csv")
+```
+
+<hr style="height:2px; border:none; background-color:black;">
+
+# Task 1
+
+To answer the research question of which maps are the most likely to win the map vote when they are an option, we will start by combining the data for player 1 and player 2 into a single dataset. This will provide a complete picture of all matches between player 1 and player 2. Next, We will address potential data quality issues such as misspelled map names and extra spaces. To clean the data, we will use the trimws() function to remove leading and trailing whitespace from the Map1, Map2, and Choice columns. We also will use fuzzy matching to handle slight differences in map names. In order to do this we will use the stringdist_join() function from the stringdist package, which allows for fuzzy matching based on the how the word sounds (Soundex). We looked this up on Google as we needed to find a function in R that would be able to do a left join with the maps dataset based on how the map name sounds. This method will make sure that the errors in spelling or abbreviations are accounted for. We will also address any issues related to "Halloween" maps. For instance, a "Halloween" version of a map may have a slightly different name ("Nuketown '84 Halloween" instead of just "Nuketown '84"). We will use string manipulation (gsub()) functions to make sure that these Halloween-specific maps are captured correctly in the dataset.
+
+After cleaning the data, we will calculate the number of times each map appeared as a candidate (either Map1 or Map2) and how often it won. In cases of ties, the map listed as Map1 will be considered the winner and the MapVote column will take on an NA value. We will incorporate this factor in our calculation by using an ifelse() to see if Map1 is the Choice and the MapVote column takes on an NA value. We will then compute the win probability for each map, which is the ratio of wins to times the map was a candidate. The amount of times the map won will be the amount of times that the map appeared in the Choice column but ONLY IF it was present in the Map1 or Map2 column as well.
+
+We will calculate the wins for both Map1 and Map2 separately by creating two different data frames. For Map1, we add a Map1 win column that is 1 if Map1 was chosen, and 0 otherwise. Similarly, we calculate the wins for Map2 in another data frame. We also will account for the tie-breaking rule by setting a map 1 tie variable to 1 if Map1 wins in a tie situation.
+
+After calculating the individual wins for Map1 and Map2 we will merge the results for both maps into a single data frame using full_join(). We then calculate the total number of times each map was a candidate, and the total number of wins. Finally, we will compute the win probability by dividing the total wins by the total appearances for each map.
+
+Lastly, we will visualize the results using a bar plot to show the win probabilities for each map, sorted from the most likely to the least likely to win. The resulting bar plot will help us visualize which maps are more likely to win when they are selected as an option. This process will allow me to finally answer the research question of "Which maps are the most likely to win the map vote when they are an option?". As we will see in the bar plot that the maps with the greatest probability of winning will be on the left hand side, since I will be sorting the probabilities from greatest to least.
+
+
+```{r}
+# Combine the player 1 and player 2 datasets into a single dataset
+COD_p1_p2 <- bind_rows(player1, player2)
+
+# Remove any leading or trailing whitespace from the Map1, Map2, and Choice Columns
+COD_p1_p2 <- COD_p1_p2 %>%  
+  mutate(
+    Map1 = trimws(Map1),  
+    Map2 = trimws(Map2), 
+    Choice = trimws(Choice)  
+  )
+
+# Remove " Halloween" from Nuketown '84
+COD_p1_p2 <- COD_p1_p2 %>%
+  mutate(
+    Map1 = gsub(" Halloween", "", Map1),  # Remove "Halloween" from Map1
+    Map2 = gsub(" Halloween", "", Map2),  # Same for Map2
+    Choice = gsub(" Halloween", "", Choice)  # Same for Choice
+  )
+
+# Fuzzy matching for Map1 using the Soundex method
+COD_p1_p2 <- stringdist_join(
+  COD_p1_p2, maps %>% select(Name), 
+  by = c("Map1" = "Name"),  # Match Map1 with the valid map names
+  mode = "left",  # Perform a left join
+  method = "soundex", 
+  max_dist = 0.5 
+)
+
+# Rename the Name column to Map1 and reorder columns
+COD_p1_p2 <- COD_p1_p2 %>%
+  select(-Map1) %>%  # Remove the old Map1 column
+  rename(Map1 = Name) %>% 
+  select(Map1, everything())  # Reorder columns to place Map1 as the first column
+
+# Fuzzy matching for Map2 using the Soundex method
+COD_p1_p2 <- stringdist_join(
+  COD_p1_p2, maps %>% select(Name), 
+  by = c("Map2" = "Name"), 
+  mode = "left",  # Perform a left join
+  method = "soundex",  
+  max_dist = 0.5
+)
+
+# Rename the Name column to Map2 and reorder columns
+COD_p1_p2 <- COD_p1_p2 %>%
+  select(-Map2) %>%  # Remove the old Map2 column
+  rename(Map2 = Name) %>%  # Rename the matched column to Map2
+  select(Map1, Map2, everything())  # Reorder columns to place Map2 as the second column
+
+# Fuzzy matching for Choice using the Soundex method
+COD_p1_p2 <- stringdist_join(
+  COD_p1_p2, maps %>% select(Name),  # Join with the valid map names
+  by = c("Choice" = "Name"),  # Match Choice with the valid map names
+  mode = "left",  # Perform a left join
+  method = "soundex",  
+  max_dist = 0.5  
+)
+
+# Rename the Name column to Choice and reorder columns
+COD_p1_p2 <- COD_p1_p2 %>%
+  select(-Choice) %>%  # Remove the old Choice column
+  rename(Choice = Name) %>%  # Rename the matched column to Choice
+  select(Map1, Map2, Choice, everything())  # Reorder columns to Choice as the third column
+
+# Calculate total wins for each map (Map1 and Map2) and determine which map was selected
+MapCandidate_Wins <- COD_p1_p2 %>%  
+  filter(!is.na(Map1) & !is.na(Map2)) %>%  
+  mutate(
+    # Check if Map1 won
+    Map1_W = ifelse(Choice == Map1, 1, 0),
+    # Check if Map2 won
+    Map2_W = ifelse(Choice == Map2, 1, 0),
+    # Handle tie-breaking rule (Map1 wins in a tie)
+    Tie_Map1_W = ifelse(Map1 == Choice & is.na(MapVote), 1, 0)
+  ) %>%  
+  # Calculate total times each map was a candidate and their wins for Map1
+  group_by(Map1) %>%  
+  summarize(
+    Times_as_Map1 = n(),
+    Wins_as_Map1 = sum(Map1_W) + sum(Tie_Map1_W)
+  ) %>%  
+  rename(Map = Map1)
+
+# Calculate total wins for Map2
+MapCandidate_Wins_Map2 <- COD_p1_p2 %>%
+  # Calculate total times each map was a candidate and their wins for Map2
+  filter(!is.na(Map1) & !is.na(Map2)) %>%
+  mutate(Map2_W = ifelse(Choice == Map2, 1, 0)) %>%
+  group_by(Map2) %>%
+  summarize(
+    Times_as_Map2 = n(),
+    Wins_as_Map2 = sum(Map2_W)
+  ) %>%
+  rename(Map = Map2)
+
+# Combine the results for both Map1 and Map2
+MapCandidate_Wins <- full_join(MapCandidate_Wins, MapCandidate_Wins_Map2, by = "Map")
+
+# Calculate total number of times each map was a candidate and their total wins
+MapCandidate_Probabilities <- MapCandidate_Wins %>%
+  group_by(Map) %>%
+  summarize(
+    Total_Times = sum(Times_as_Map1, Times_as_Map2, na.rm = TRUE),
+    Total_Wins = sum(Wins_as_Map1, Wins_as_Map2, na.rm = TRUE)
+  ) %>%
+  # Calculate the win probability
+  mutate(Win_Probability = Total_Wins / Total_Times) %>%
+  arrange(desc(Win_Probability))
+
+# Create a bar plot to visualize the win probabilities for each map
+# Ordered from most to least likely to win
+ggplot(data = MapCandidate_Probabilities, mapping = aes(x = reorder(Map, -Win_Probability), y = Win_Probability)) +
+  geom_bar(stat = "identity", fill = "skyblue") +  # Create bars for each map's win probability
+  labs(
+    title = "Map Win Probabilities",
+    x = "Map",
+    y = "Win Probability"
+  ) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for readability
+
+MapCandidate_Probabilities
+
+```
+
+#### Research Question: Which maps are the most likely to win the map vote when they are an option?
+
+### Research Question Answer
+
+To determine which maps are most likely to win the map vote when they are an option, we can identify the maps with the highest win probability on the left hand side of the barplot. These maps are the maps that have the highest bar height in the bar plot starting on the left and moving right.
+
+Based on the matches from player 1 and player 2, here are the top 5 maps by win probability:
+
+1.  Nuketown '84 – 0.825
+
+2.  Crossroads Strike – 0.776
+
+3.  Raid – 0.750
+
+4.  Diesel – 0.709
+
+5.  Standoff – 0.702
+
+**These are the most likely maps to win the map vote when they are options for the players.**
+
+In the bar plot, these maps are arranged by their win probability of winning given that they are a candidate in descending order. The y-axis represents the win probability of each map, and the x-axis represents the map names. The maps with the highest win probabilities (like "Nuketown '84" with 0.825) will have the tallest bars, are on the left end of the plot since the maps are ranked from highest to lowest win probability.
+
+"Nuketown '84" has the tallest bar showing that it is the most likely to win the map vote. "Crossroads Strike" follows with a slightly shorter bar than "Nuketown '84", showing a win probability of winning of 0.776, and so on.
+
+The maps on the right end of the bar plot have the lowest win probabilities given that they are an option. So examples of maps that have low win probabilities given that they are an option are Miami (0.12), Echelon (0.178), and Deprogram (0.244).
+
+<hr style="height:2px; border:none; background-color:black;">
+
+# Task 2
+
+### Tools Used
+
+I used OpenAI’s ChatGPT (GPT-4) for this task.
+
+### Prompts Used and Discussion
+
+## Initial Prompt:
+
+
+Task 1 Prompt:
+
+"Relevant Information: (Complete without using Generative AI) Prior to each online match, players in the
+game lobby are presented with two options for the battlefield of the upcoming game (`Map1` and
+`Map2`). The players have the option to vote and the resulting vote is recorded in the `MapVote` column.
+The winning map is listed in the `Choice` column. In the event of a tie vote, the map listed in `Map1` is
+chosen. (Games for which the player entered the lobby after the vote has taken place have no information
+in `Map1` and `Map2` but have the winning map presented in `Choice`.)
+
+Research Question: Which maps are the most likely to win the map vote when they are an option?
+
+Notes: To answer this question, write a paragraph (or more) discussing how you plan to answer this
+question. Be sure to address the data quality issues mentioned below and discuss how you will do the
+calculations. Then, write code and answer the question. (If I must answer questions about your
+approach/decision making process by reading your code rather than your discussion, you will lose points.)
+As part of your solution, you should calculate the proportion/probability that a map wins the vote given
+that it was a candidate. To do this, you will have to calculate the number times that each map was listed as
+a candidate (Map1 or Map2) and earned more votes than the other candidate. As part of this, you should
+consider whether a given map won the vote by getting more votes than the other option or if it was
+selected since it was `Map1` and the vote was a tie. You should also include a visualization of the results.
+There might be some data quality issues (such as misspelled map names and extra (trailing) blanks in
+some entries) to solve for this problem. You can find the proper names/spellings in the CODMaps.csv
+file. To full receive full credit, you must write code to solve these issues rather than editing the .csv files. 
+
+I am working with a dataset on map votes in a video game. Each row represents a game, and the dataset contains the following columns: Map1, Map2, MapVote, and Choice. I need to calculate the probability of each map winning when it is a candidate (either in Map1 or Map2). The dataset has some quality issues like misspelled map names or extra blanks. Provide code in R to clean the data, calculate the probabilities, and visualize the results. Use a bar plot to display the probabilities at the end."
+
+This first initial prompt gave chatGPT a clear description of the problem and requirements for the task. I first provided the entire description of task 1 and then gave the generative AI steps for the problem. My prompt at the end describes the columns Map1, Map2, MapVote, and Choice, which represent the key variables of the dataset The task at hand focuses on calculating the probability of each map winning when it is a candidate in either Map1 or Map2. Additionally, the initial prompt that I provided to the AI gives a description of the potential data quality issues, such as misspelled map names and trailing blanks. I made sure to spefcify this before the AI did the analysis. Lastly, I made sure to specify the desired outcome which is a bar plot visualization of the calculated probabilities. I feel like this prompt sets a strong foundation by giving the generative AI general steps to follow (cleaning, probability calculation) and the visualization. This prompt also leaves room for the AI to decide how to handle data inconsistencies and the actual implementation of the code.
+
+## Follow-up Prompt 1:
+
+"Ensure that misspelled map names are corrected and trailing blanks are removed. Also, you should use the maps csv file with the correct names."
+
+The first follow-up prompt that I provided the generative AI gives more specific guidelines into the data cleaning process. The first solution that the generative AI provided ended up deleting the entire dataset after it tried to remove observations that had NA values. In this prompt, I wanted to address how to handle misspelled map names and trailing blanks without deleting all of the observations in the dataset. This prompt and the previous result shows the importance of making sure that the map names are consistent and valid by cross-referencing them with the maps csv file. This step makes sure that only correct map names are used in the analysis. The prompt called the AI to remove the blanks using trimws() which is similar to what I did. This prompt also tells the AI to check map names against the maps file to detect invalid entries for the Map1, Map2, and Choice columns. By focusing on these aspects, this prompt addresses the data cleaning stage of this task which makes sure that the analysis is built on a clean and accurate dataset.
+
+## Follow-up Prompt 2:
+
+"Refactor the code to include comments for each step and make it easier to follow. Also, clarify how tie cases are handled where Map1 is automatically chosen."
+
+After Follow-up Prompt 1 all of the code worked well but I wanted the generative AI to develop better commenting for what it was doing since I did not really understand some of the things that it was doing. This prompt also encourages better organization of the code as well. After I used this prompt, this made sure that the code was functional and also understandable to me. The prompt also addresses the handling of tie cases that were talked about in the task 1 description. A tie case happens when Map1 is automatically chosen as the winner. By clarifying this edge case the AI is able to get a better picture for what it is going to do in the solution. This step is essential to avoid potential misinterpretation or errors in the analysis, as before the generative AI was ignoring these tie cases.
+
+
+### Generative AI Solution
+
+```{r}
+# Combine Player 1 and Player 2 datasets
+data <- bind_rows(player1, player2)
+
+# Clean map names by removing extra blanks and correcting typos
+maps_cleaned <- maps %>%
+  mutate(Name = trimws(Name))  # Standardize reference map names
+
+data <- data %>%
+  mutate(
+    Map1 = trimws(Map1),
+    Map2 = trimws(Map2),
+    Choice = trimws(Choice)
+  ) %>%
+  mutate(
+    Map1 = ifelse(Map1 %in% maps_cleaned$Name, Map1, NA),
+    Map2 = ifelse(Map2 %in% maps_cleaned$Name, Map2, NA),
+    Choice = ifelse(Choice %in% maps_cleaned$Name, Choice, NA)
+  )
+
+# Filter rows where all map names (Map1, Map2, Choice) are valid
+data <- data %>%
+  filter(!is.na(Map1) & !is.na(Map2) & !is.na(Choice))
+
+# Calculate map appearances (as Map1 or Map2)
+map_counts <- data %>%
+  pivot_longer(cols = c(Map1, Map2), names_to = "Position", values_to = "Map") %>%
+  count(Map, name = "total_votes")
+
+# Calculate map wins
+map_wins <- data %>%
+  count(Choice, name = "wins") %>%
+  rename(Map = Choice)
+
+# Merge counts and wins, and compute win probabilities
+map_stats <- map_counts %>%
+  left_join(map_wins, by = "Map") %>%
+  mutate(
+    wins = replace_na(wins, 0),
+    win_probability = wins / total_votes
+  ) %>%
+  arrange(desc(win_probability))
+
+# Plot win probabilities
+ggplot(map_stats, aes(x = reorder(Map, win_probability), y = win_probability)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Win Probability for Maps",
+    x = "Map",
+    y = "Win Probability"
+  ) +
+  theme_minimal()
+
+map_stats
+
+```
+
+## Comparison of Task 1 (My Solution) and the Generative AI Solution
+
+
+## Data Cleaning Process
+
+Both my solution and the generative AI solution successfully addressed the data quality issues like trimming white space and handling the inconsistencies in map names. However, I used fuzzy matching in order to do this and the generative AI used ifelse() statements to cross check the maps dataset with the player 1 and player 2 dataset.This method allowed me to match similar but not exactly identical names ("MapOne" vs. "Map One") by aligning the entries that were close enough. The AI solution used ifelse() statements to cross-check and standardize map names between the datasets (player 1 and player 2 datasets). The AI directly compared the values and replaced them if they met specific conditions. The generative AI solution introduced an error when it deleted 208 observations from the dataset because of this approach it took. I believe this happened since the AI applied overly strict criteria for filtering out rows with missing or mismatched data. While cleaning the data is important, the generative AI unnecessarily discarding a large amount of data will reduce the sample size and potentially introduce bias or weaken conclusions about the research question. My approach was more cautious of this, ensuring that no observations were removed unless absolutely necessary. In my approach I was able to preserve the integrity of the data by keeping all 839 observations that were in the orginal dataset when doing my data cleaning.
+
+## Tie-Breaking for Map1 and Win Calculation
+
+Both me and the generative AI took ties into account during the map selection process. However, when I implemented this in my code I made sure to explicitly address the tie-breaking rule where Map1 wins in the event of a tie. I explicitly coded the tie-breaking rule that "Map1 wins in the event of a tie." This rule was directly implemented within the calculation logic for the Map1 wins. I ensured that there was no ambiguity that existed in the win calculation process by hardcoding this tie breaking rule. This detail allowed for consistency in my win calculations. The generative AI solution didn’t go into this level of detail and instead relied on default tie-handling mechanisms. The AI solution did not clarify how it handled ties in the code. This could have led to inconsistencies or inaccuracies in the win probability calculation. My explicit tie-breaking rule that I implemented in my solution in Task 1 eliminated the risk of ambiguity, whereas the AI's more generalized approach could have resulted in inconsistent results in cases where there was ties.
+
+## Visualization and Interpretation
+
+Both my solution and the generative AI solution produced a bar plot to visualize win probabilities given the maps were candidates. I noticed that the generative AI solution lacked sufficient explanation of how the visualization was constructed or sorted. The generative AI produced a bar plot but lacked detailed explanations of how the visualization was made initially, so I had to ask it to explain how it did this. There was also no discussion/explanation on how data cleaning impacted the final visualization. This made it harder for me to interpret the plot. Also since the generative AI deleted 208 observations in its solution, the visualization was based on incomplete data. This probably led the results shown in the generative AI bar plot to be skewed and inaccurate. On the other hand, I made sure to explain each step of the data preparation with correct commenting and how I generated the bar plot. I also preserved all 839 observations in my dataset used to produce the bar plot. This made sure that the bar plot reflected the full length of the data and all of the observations/matches recorded by player 1 and player 2. So my bar plot actually accurately represented the win probabilities given that the map was a candidate.
+
+## Overall Assessment
+
+I believe my manual solution was much better than the generative AI solution in several key ways:
+
+### Data Integrity
+
+My approach to data cleaning was more careful than the generative AI as I was able to preserve all observations in the original player 1 and player 2 datasets and avoided unnecessary deletions. The generative AI’s approach led to the removal of 208 observations which significantly reduced the sample size and introduced potential bias issues for the analysis.
+
+### Clear Process of Code
+
+I provided detailed explanations of each step in my commenting and had a very clear syncorous way of how I handled each step. Particularly in the data cleaning and tie-breaking processes I showed this in my code. The AI solution lacked transparency and it was hard for me to even understand what certain parts of the code is doing. Especially in its tie-breaking logic and data cleaning steps the generative AI used functions that I never even heard of such as pivot_longer(). I feel like my solution is easier for the average person to follow, since the generative AI tries to optimize its code and I am trying to create the most understandable and robust code as possible. 
+
+### Reliability of Results
+
+In my solution I was able maintain the full dataset and address tie-breaking. This produced more reliable win probabilities and a trustworthy barplot visualization of the probabilities the map would win when it is a candidate for the match. The AI’s solution, with its data removal of 208 observation and reliance on default tie-handling, produced results that could have been inconsistent or inaccurate. Thus leading to a visualization that is most likely inaccurate in answering the research question. Using the generative AI's solution to tell which maps had the highest win probabilities given that they are a candidate for the match would be inaccurate because of the deletion of 208 observations and its approach on the tie handling process. 
+
+## Conclusion
+
+Overall, while the generative AI solution provided a quick, automated, and highly optimized approach, my solution allowed for more flexibility, robustness, and clarity. The AI's much too strict data cleaning process and general lack of detail in its code decreased the quality of its results. While in my cautious approach, I was able to maintain the data integrity which led to accurate representations of which maps have the highest probabilities of winning when they are a candidate for the match.
+
+<hr style="height:2px; border:none; background-color:black;">
+
+# Task 3
+
+## Data Cleaning:
+```{r}
+players <- bind_rows(player1 %>% mutate(Player = "Player 1"),
+                     player2 %>% mutate(Player = "Player 2"))
+
+players <- players %>%
+  mutate(GameType = str_replace(GameType, "HC - ", ""))
+
+players <- players[!is.na(players$TotalXP), ]
+
+unique(players$GameType)
+```
+
+- Combined data from both players to analyze across all available matches.
+- Removed the "HC – " prefix to unify game types.
+- Removed the rows where TotalXP was NA
+
+## Summary Statistics:
+We first explore the distributions of `TotalXP` and `Score` and visualize their relationship with `GameType`.
+
+```{r}
+summary_stats <- players %>%
+  group_by(GameType) %>%
+  summarize(
+    AvgTotalXP = mean(TotalXP, na.rm = TRUE),
+    AvgScore = mean(Score, na.rm = TRUE),
+    Count = n()
+  )
+print(summary_stats)
+```
+
+The summary statistics table provides an overview of the average TotalXP and Score earned across the different game types. It also includes the count of matches for each game type, giving an idea of the dataset's distribution. Notably, game types such as 'Hardpoint' and 'Domination' appear to have higher average TotalXP values, suggesting these game modes may reward more experience points on average. Additionally, differences in the average Score across game types highlight the varying objectives and scoring mechanisms in each mode.
+
+#### Distribution of TotalXP and Score by GameType
+
+```{r}
+# TotalXP distribution by GameType
+ggplot(players, aes(x = GameType, y = TotalXP, fill = GameType)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "TotalXP Distribution by GameType", 
+       x = "Game Type", 
+       y = "Total XP")
+```
+
+This boxplot displays the distribution of TotalXP earned across the different game types. Game types such as 'Domination' and 'Hardpoint' have higher medians and a wider range of TotalXP, suggesting these modes might have more opportunities for scoring and XP accumulation. In contrast, modes like 'Kill Confirmed' appear to have a lower median and smaller interquartile range, potentially reflecting shorter games or fewer scoring opportunities.
+
+
+```{r}
+# Score distribution by GameType
+ggplot(players, aes(x = GameType, y = Score, fill = GameType)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Score Distribution by GameType", 
+       x = "GameType", 
+       y = "Score")
+```
+
+This boxplot for Score distribution illustrates how the player's score varies by game type. Modes like 'Domination' and 'Hardpoint' show higher median scores. On the other hand, modes such as 'Kill Confirmed' display lower scores. The differences in distribution hint at the distinct playstyles and scoring potential in each game mode.
+
+## Model Building
+We use a linear regression model to assess how `GameType` and `Score` influence `TotalXP`.
+
+### Regression Model
+
+```{r}
+model <- lm(TotalXP ~ Score + GameType, data = players)
+summary(model)
+```
+
+### Insights from Model
+
+- The regression results indicate that `Score` has a positive association with `TotalXP`, with a coefficient of 2.7052. This suggests that for each additional point in `Score`, TotalXP increases by approximately 2.71 points, holding other factors constant.
+
+- The `GameType` variable shows varying effects on TotalXP:
+ 
+  - Playing "Hardpoint" results in an average increase of 121.76 TotalXP compared to the baseline game type ("Domination")
+ 
+  - "Kill Confirmed" is associated with a decrease of 3703.17 TotalXP relative to "Domination"
+ 
+  - "TDM" shows a reduction of 2570.44 TotalXP compared to "Domination"
+
+- The model’s R-squared value of 0.3377 indicates that approximately 33.77% of the variability in `TotalXP` is explained by `Score` and `GameType`. This suggests that while the model captures some important factors, other variables may also contribute to TotalXP.
+
+We visualize the predicted vs actual TotalXP below:
+```{r}
+ggplot(data.frame(Actual = players$TotalXP, Predicted = predict(model, na.action = na.exclude)), aes(x = Actual, y = Predicted)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "Predicted vs Actual TotalXP", 
+       x = "Actual TotalXP", 
+       y = "Predicted TotalXP")
+```
+
+- The scatterplot illustrates the alignment between the model's predictions and the actual TotalXP values. Deviations from the red line (perfect predictions) highlight areas where the model underestimates or overestimates TotalXP, suggesting potential improvements or additional factors to explore.
+
+## Answering the Research Question
+
+## Research Question: How does the game type affect TotalXP after accounting for the Score?
+
+To address the research question, we interpret the results of the regression model:
+
+1. **Effect of Game Type on TotalXP**
+   - The baseline game type is "Domination."
+   - The model estimates the following changes in TotalXP for each game type compared to "Domination":
+     - **Hardpoint**: An average increase of `121.76` TotalXP
+     - **Kill Confirmed**: A decrease of `-3703.17` TotalXP on average
+     - **Team Deathmatch (TDM)**: A reduction of `-2570.44` TotalXP on average
+
+2. **Control Variable: Score**
+   - The coefficient for `Score` (2.7052) is highly significant (p < 0.001), indicating a strong positive relationship between Score and TotalXP. For every additional point in Score, TotalXP increases by approximately `2.71` points, regardless of the game type.
+
+3. **Key Insights**
+   - After accounting for Score, the game type influences TotalXP, but the effects vary by mode.
+     - **Domination** generally offers higher adjusted TotalXP compared to other modes.
+     - **Hardpoint** shows a negligible difference from Domination, while **Kill Confirmed** and **TDM** tend to yield lower TotalXP.
+   - The lack of statistical significance in the game type coefficients suggests that additional data or variables may be needed to better understand the relationship.
+
+4. **Conclusion**
+   - Game type does affect TotalXP after adjusting for Score, with "Domination" offering the highest adjusted TotalXP among the modes analyzed. However, Score remains the dominant predictor of TotalXP.
+
+<hr style="height:2px; border:none; background-color:black;">
+
+# Task 4
+
+## Research Question: Can we predict game result based on in game features? 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(e1071)
+library(class)
+library(e1071)
+library(caret)
+library(dplyr)
+
+
+data_p1 <- read.csv("~/Downloads/CODGames_p1_380.csv")
+data_p2 <- read.csv("~/Downloads/CODGames_p2_380.csv")
+data <- bind_rows(data_p1, data_p2)
+
+```
+
+## Random Forest
+
+
+### Data Examination
+```{r}
+colSums(is.na(data))
+``` 
+
+```{r}
+sapply(data, function(x) sum(x == "", na.rm = TRUE))
+```
+
+
+* After examining the data set, there are many NA values and Empty values (values that are " "). This needs to be handled before the building a model in future. 
+* Also, Variables like Confirms, Denies, Objectives, Objective Kills, Captures, Diffuses, Plants, Detonates, Deposits, Time_sec and Time_Min has too many NA values that consists more than 50 percent of data set which has 839 row. These features can be omitted in the future due to lack of population. 
+
+```{r}
+str(data)
+```
+
+* The specific data type needs to be properly implemented in the model such as categorical variables like Primary Weapon, Choice, XPType, etc. This categorical values will be factored. 
+* The data set is missing a indicator that shows whether player won the game. This can be extracted from Result value, left most number being the score for player. Ex. 100-97, because 100 > 97, player won. Also, since the research question is to predict winners, tied games will be marked as lost
+
+
+### Implemenation for Data Wrangling 
+
+```{r}
+data <- data[!is.na(data$Result) & data$Result != "", ]
+
+data$PlayerWon <- sapply(strsplit(as.character(data$Result), "-"), function(x) {
+  left_score <- as.integer(x[1])
+  right_score <- as.integer(x[2])
+  ifelse(left_score > right_score, 1, 0)
+})
+data$FullPartial <- ifelse(data$FullPartial == "Full", 1, 
+                           ifelse(data$FullPartial == "Partial", 0, NA))
+
+
+
+columns_to_drop <- c("Unnamed: 0", "Diffuses", "Plants", "Detonates", "Deposits", 
+                     "DidPlayerVote", "Result", "Date", "MapVote", "Map1", "Map2")
+data <- data[ , !names(data) %in% columns_to_drop]
+
+# Handle missing values
+# Impute numerical columns with median
+num_cols <- sapply(data, is.numeric)
+data[num_cols] <- lapply(data[num_cols], function(x) ifelse(is.na(x), median(x, na.rm = TRUE), x))
+
+# Impute categorical columns with the most frequent value
+cat_cols <- sapply(data, is.character)
+data[cat_cols] <- lapply(data[cat_cols], function(x) {
+  x[is.na(x)] <- names(sort(table(x), decreasing = TRUE))[1]
+  return(x)
+})
+
+# Convert categorical variables to factors
+data[cat_cols] <- lapply(data[cat_cols], as.factor)
+
+# Encode target variable as factor
+data$PlayerWon <- as.factor(data$PlayerWon)
+
+
+```
+
+* Created new variable called PlayerWon which is the target variables for future model. 
+* As it was mentioned above, NA and Empty values were handled. 
+* Scaled numeric Values and factored categorical variables. 
+* Also, any unnecessary variables are dropped, such as variables with too many NA values. 
+
+
+### Implemenation of Random Forest
+
+```{r}
+# Split data into training and testing sets
+set.seed(123)
+train_index <- createDataPartition(data$PlayerWon, p = 0.8, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+```
+* The split of train/test data is 80/20 percent of data set. 
+
+### Finding the most optimal number of trees
+```{r}
+
+# Define a sequence of ntree values to test
+ntree_values <- seq(100, 1000, by = 100)
+
+# Initialize a data frame to store results
+results <- data.frame(ntree = integer(), OOB_Error = numeric())
+
+# Loop through different ntree values
+for (n in ntree_values) {
+  rf_model <- randomForest(PlayerWon ~ ., data = train_data, ntree = n)
+  # Store the ntree value and Out-of-Bag (OOB) error
+  results <- rbind(results, data.frame(ntree = n, OOB_Error = rf_model$err.rate[nrow(rf_model$err.rate), "OOB"]))
+}
+
+# Plot OOB error vs. ntree
+plot(results$ntree, results$OOB_Error, type = "b", pch = 19, xlab = "Number of Trees", ylab = "OOB Error",
+     main = "OOB Error vs. Number of Trees")
+```
+
+* In order to find most optimal number of trees, the process was done by comparing Out-of-Bag (OOB) error for result of every 100th trees. As it is shown the graph, the model with 800 trees has the lowest value of OOB, which makes it to be the most optimal. 
+
+
+```{r}
+# Build Random Forest model
+set.seed(123)
+model1 <- randomForest(PlayerWon ~ ., data = train_data, importance = TRUE, ntree = 800)
+
+# Evaluate feature importance
+importance <- importance(model1)
+varImpPlot(model1)
+
+# Make predictions on the test set
+predictions <- predict(model1, newdata = test_data)
+
+# Confusion matrix to evaluate performance
+confusionMatrix(predictions , test_data$PlayerWon,positive = "1")
+
+```
+
+#### Evaluation on Random Forest model 1
+* According to Mean Decrease Accuracy, variable death and Time_min are the most significant roles for model accuracy and Choice is the least
+* According to Confusion matrix, the model has successfully predicted 32 lost games and 72 won games; on the other hand, model fail to predict 41 cases of lost games and 16 won games.
+* Accuracy of model is 64.6 percent and No Information Rate was 54.6 percent. Since Accuracy is higher than NIR value and P-Value [Acc > NIR] is 0.006697, it confirms that the improvement was statistically significant. 
+* The Sensitivity shows to be 0.8182 which represent this model is good at finding class with 1, in other words, the model identified 81.82 percent of correct 1 class(player won)
+* The Specificity is 0.4384 which means the model is not performing well on predicting the case of player unwon by 43.84 percent. 
+* The average of sensitivity and specificity came out to be 62.83 percent which is lower than the overall accuracy. 
+
+#### Evaluating Variable Importance
+```{r}
+
+importance <- as.data.frame(importance(model1))
+importance$Feature <- rownames(importance)
+ggplot(importance, aes(x = reorder(Feature, MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Feature Importance (Model 1)", x = "Features", y = "Mean Decrease in Gini") +
+  theme_minimal()
+
+```
+
+* The graph suggests Choice of the map to be the most important variable for creating pure nods which is related to improving model classification. 
+* Primary Weapon and Deaths follows next. 
+* Captures, denies, and Confirms shows to be the least important variables for splitting the nodes. 
+* As it was shown above, the Choice Variable has lowest mean decrease accuracy but it has the highest mean decrease in gini. This outcome could suggest that the variable itself is helpful for structuring the model but does not contribute too much on prediction accuracy. This can also suggest the variable could lead the model to overfitting. 
+
+#### Improvement of Random Forest 
+* Due to previous issue from Choice Variable, here is another random forest model without Choice variable in features
+
+```{r}
+model2 <- randomForest(PlayerWon ~ . - Choice, data = train_data,importance = TRUE, ntree = 800)
+predictions <- predict(model2, newdata = test_data)
+confusionMatrix(predictions, test_data$PlayerWon, positive = "1")
+```
+* After omitting Choice variable from features, overall performance of model improved in almost every outcome such as: Accuracy, Sensitivity, NPV, Balanced Accuracy
+* Accuracy : 0.6792 
+* Sensitivity : 0.8667 
+* Neg Pred Value : 0.7143 
+* Balanced Accuracy : 0.6507  
+
+```{r}
+importance <- importance(model2)
+varImpPlot(model2)
+```
+* By omitting Choice variable, model 2 shows consistent importance both in Accuracy and Gini, meaning most of variables are consistent with their roles in improving accuracy and structuring pure nodes.  
+
+
+## KNN 
+
+### Data Preparation for kNN model 
+```{r}
+data <-read.csv("~/Downloads/finaldata.csv")
+rownames(data) <- NULL
+
+# Data Cleaning: Drop unnecessary columns and rows with missing values
+columns_to_drop <- c("Confirms", "Denies", "Objectives", "Captures", "Diffuses",
+                     "Plants", "Detonates", "Deposits", "Time_Sec", "Time_Min",
+                     "Result", "DidPlayerVote", "Map1", "Map2", "MapVote", "Date","X")
+
+data <- data %>% select(-(columns_to_drop)) %>% na.omit()
+
+# Convert categorical variables to factor
+categorical_columns <- c("Choice", "PrimaryWeapon", "XPType", "GameType")
+data[categorical_columns] <- lapply(data[categorical_columns], as.factor)
+
+# Convert FullPartial to binary numeric values
+data$FullPartial <- ifelse(data$FullPartial == "Full", 1, 0)
+
+# Standardize numerical features
+numeric_columns <- c("Eliminations", "Deaths", "Score", "Damage", "TotalXP")
+data[numeric_columns] <- scale(data[numeric_columns])
+
+
+rownames(data) <- NULL
+data <- data %>%
+  filter(!(FullPartial == 0 & Eliminations == -0.67900458 & Deaths == -0.55404000 & PlayerWon == 0))
+data <- data[-143, ]
+```
+  
+* In this process, though the data set was imported from computer, it is still the same data set that was used in previous random forest (combined of two players' data set, PlayerWon Variable). It was only imported from computer to reduce redundancy of work. 
+* Similar to the last data cleaning process, the variables with too many NA values and relevant variables are dropped. 
+* Categorical variables are converted to factor, and FullPartial variable was converted to numeric values. 
+* In order to achieve accurate result, all numerical features have been standardized. 
+* Lastly, there has been two lines where it had empty values in Choice variable, which was not removed from previous handling and only ways to do so was to manually remove them- one of them was removed by filter function, and the other one was removed by the row number. 
+
+### K-Fold Cross Validation
+```{r}
+
+library(class)
+library(caret)
+library(dplyr)
+
+# Convert factor columns to numeric
+data$Choice <- as.numeric(data$Choice)
+data$PrimaryWeapon <- as.numeric(data$PrimaryWeapon)
+data$XPType <- as.numeric(data$XPType)
+data$GameType <- as.numeric(data$GameType)
+
+# Set up k-fold cross-validation
+set.seed(42)
+folds <- createFolds(data$PlayerWon, k = 5, list = TRUE, returnTrain = TRUE)
+
+# Function to evaluate kNN using RMSE for a specific fold
+evaluate_knn_rmse <- function(train_indices, test_indices, k) {
+  train_X <- data[train_indices, -ncol(data)]
+  train_y <- data[train_indices, ncol(data)]
+  test_X <- data[test_indices, -ncol(data)]
+  test_y <- data[test_indices, ncol(data)]
+  
+  # Run kNN
+  knn_pred <- as.numeric(as.character(knn(train = train_X, test = test_X, cl = train_y, k = k)))
+  
+  # Compute RMSE
+  rmse <- sqrt(mean((knn_pred - test_y)^2))
+  return(rmse)
+}
+
+# Evaluate RMSE for different values of k
+k_values <- 1:15
+rmse_results <- sapply(k_values, function(k) {
+  fold_rmses <- sapply(folds, function(indices) {
+    train_indices <- indices
+    test_indices <- setdiff(1:nrow(data), indices)
+    evaluate_knn_rmse(train_indices, test_indices, k)
+  })
+  mean(fold_rmses)
+})
+
+# Find optimal k based on lowest RMSE
+optimal_k <- which.min(rmse_results)
+cat("Optimal k based on RMSE:", optimal_k, "\n")
+
+# Plot RMSE vs k to visualize the performance
+plot(k_values, rmse_results, type = "b", col = "blue", xlab = "k", ylab = "RMSE", main = "RMSE vs k")
+abline(v = optimal_k, col = "red", lty = 2)
+
+```
+
+
+* In order to find proper k-values in kNN model, K-fold cross validation method was used by comparing RMSE values for each k values. 
+* The result shows that 3 is the most optimal k value, since it shows the least RMSE value.
+
+
+```{r}
+library(class)
+library(caret)
+library(dplyr)
+
+# Split Data into Training and Testing Sets
+set.seed(42)
+train_indices <- createDataPartition(data$PlayerWon, p = 0.8, list = FALSE)
+train_data <- data[train_indices, ]
+test_data <- data[-train_indices, ]
+
+# Separate Features and Target Variable
+train_X <- train_data[, -which(names(train_data) == "PlayerWon")]
+train_y <- as.numeric(as.character(train_data$PlayerWon))
+test_X <- test_data[, -which(names(test_data) == "PlayerWon")]
+test_y <- as.numeric(as.character(test_data$PlayerWon))
+
+# Run kNN with k = 5
+k <- 3
+knn_pred <- knn(train = train_X, test = test_X, cl = train_y, k = k)
+knn_pred <- as.numeric(as.character(knn_pred))  # Convert predictions to numeric
+conf_matrix <- confusionMatrix(factor(knn_pred, levels = c(0, 1)), 
+                                factor(test_y, levels = c(0, 1)), 
+                                positive = "1")
+# Calculate RMSE
+rmse <- sqrt(mean((knn_pred - test_y)^2))
+cat("RMSE for kNN with k =", k, ":", rmse, "\n")
+cat("Confusion Matrix:\n")
+print(conf_matrix)
+```
+
+### Implementation of kNN model
+
+
+* The model has shows to have 0.6938887  for RMSE values this means that the model's prediction deviate from the true values by approximately 0.69 units 
+* The Confusion matrix shows that model has successfully predicted 11 case of non-victory game and 18 of won games, and on the other hand, the model failed to predict 11 cases of won games and 15 cases of non-victory game.
+* The final accuracy of the model is 51.85 percent which is much lower compared to the previous random forest model. 
+* The sensitivity of the model is 62.07 percent, meaning, the model only correctly identifies case of won games by 62 percent. 
+* Specificity is 40 percent which means model tends to predict game to be won when the actual game was lost by 40 percent.
+
+
+
+## Naive Bayes
+```{r}
+data <- read.csv("~/Downloads/finaldata.csv")
+rownames(data) <- NULL
+
+# Data Cleaning: Drop unnecessary columns and rows with missing values
+columns_to_drop <- c("Confirms", "Denies", "Objectives", "Captures", "Diffuses",
+                     "Plants", "Detonates", "Deposits", "Time_Sec", "Time_Min",
+                     "Result", "DidPlayerVote", "Map1", "Map2", "MapVote", "Date","X")
+
+data <- data %>% select(-(columns_to_drop)) %>% na.omit()
+
+# Convert categorical variables to factor
+categorical_columns <- c("Choice", "PrimaryWeapon", "XPType", "GameType")
+data[categorical_columns] <- lapply(data[categorical_columns], as.factor)
+
+# Convert FullPartial to binary numeric values
+data$FullPartial <- ifelse(data$FullPartial == "Full", 1, 0)
+
+# Standardize numerical features
+numeric_columns <- c("Eliminations", "Deaths", "Score", "Damage", "TotalXP")
+data[numeric_columns] <- scale(data[numeric_columns])
+
+
+rownames(data) <- NULL
+data <- data %>%
+  filter(!(FullPartial == 0 & Eliminations == -0.67900458 & Deaths == -0.55404000 & PlayerWon == 0))
+data <- data[-143, ]
+data$Choice <- as.factor(data$Choice)
+data$PrimaryWeapon <- as.factor(data$PrimaryWeapon)
+data$XPType <- as.factor(data$XPType)
+data$GameType <- as.factor(data$GameType)
+data$PlayerWon <- as.factor(data$PlayerWon)  
+
+```
+* For Naive Bayes model, the same data set and same data preparation was done, this includes omitting variables with NA value dominant. And for Naive Bayes model, it is critical to factor every categorical value. 
+
+```{r}
+table(data$PlayerWon)
+```
+* Before implementing data set to model, it is important to see the balance in the target value, since if class dominates the other class, it could lead to the biased prediction. 
+
+
+```{r}
+# Split data into training and testing sets (80/20 split)
+set.seed(42)
+train_indices <- createDataPartition(data$PlayerWon, p = 0.8, list = FALSE)
+train_data <- data[train_indices, ]
+test_data <- data[-train_indices, ]
+
+# Train a Naive Bayes model
+naive_bayes_model <- naiveBayes(PlayerWon ~ ., data = train_data)
+
+# Make predictions on the test set
+predictions <- predict(naive_bayes_model, test_data)
+
+# Evaluate the model
+conf_matrix <- confusionMatrix(predictions, test_data$PlayerWon, positive = "1")
+
+# Print results
+cat("Confusion Matrix:\n")
+print(conf_matrix)
+
+# Calculate Accuracy
+accuracy <- conf_matrix$overall["Accuracy"]
+cat("Accuracy:", accuracy, "\n")
+```
+* The model has successfully predicted 10 unwon games and 18 games of won games.
+* The model failed to predict 12 of won games and 13 of unwon games. 
+* The overall accuracy is 52.83, and NIR value of 56.6 percent
+* The P-Value [Acc > NIR] is 0.756, meaning the model's accuracy is not statistically better than random guessing. 
+* The model has sensitivity of 60 percent, meaning it correctly identifies 60 percent of won games 
+* The specificity is 43.48 percent, meaning: the model correctly identifies only 43.48 percent of unwon games. 
+* Since McNemar's Test P-Value is 1.0000, this shows that model's errors are evenly distributed between false positive and false negative. 
+
+
+## Overall Comparison 
+```{r}
+# Store metrics from the models
+rf_acc <- 0.677
+rf_ci  <- c(0.5989, 0.7485)
+rf_kappa <- 0.3407
+rf_sens <- 0.7614
+rf_spec <- 0.5753
+
+knn_acc <- 0.5185
+knn_ci  <- c(0.3784, 0.6566)
+knn_kappa <- 0.0209
+knn_sens <- 0.6207
+knn_spec <- 0.4000
+
+nb_acc <- 0.5283
+nb_ci  <- c(0.3864, 0.6670)
+nb_kappa <- 0.0350
+nb_sens <- 0.6000
+nb_spec <- 0.4348
+
+# Create a data frame for comparison
+model_results <- data.frame(
+  Model = c("Random Forest", "kNN", "Naive Bayes"),
+  Accuracy = c(rf_acc, knn_acc, nb_acc),
+  Kappa = c(rf_kappa, knn_kappa, nb_kappa),
+  Sensitivity = c(rf_sens, knn_sens, nb_sens),
+  Specificity = c(rf_spec, knn_spec, nb_spec),
+  stringsAsFactors = FALSE
+)
+
+# Print the comparison table
+print(model_results)
+
+
+
+```
+* By comparing the 3 models, Random forest has highest Accuracy by 67 percent.
+
+```{r}
+barplot(model_results$Accuracy,
+        names.arg = model_results$Model,
+        col = "skyblue",
+        main = "Model Accuracy Comparison",
+        ylab = "Accuracy",
+        ylim = c(0,1))
+```
+
+
+* Random forest model has shown better result than 3 models in terms of accuracy.  
+* Random forest also has the highest Kappa Value compare to other models, meaning: it predicts in better agreement with the ground truth than the other models
+* Lastly, Random forest model has the best Sensitivity and Specificity value compare to kNN and Naive Bayes, meaning, the model is better at identifying both cases of won and unwon games compare to other models. 
+* According to accuracy, Kappa, sensitivity, and specificity value, Random Forest has best performance among three models. 
+
+## Conclusion 
+
+* After building 3 different machine learning models, the result indicates that it is possible to predict game outcomes based on in game features, although 3 models showed different accuracy of result. Among the three model, the Random Forest showed the best performance by achieving higher accuracy and reliability metrics than kNN and Naive Bayes model. Such result shows that the complex relationship and interactions within in-game features are best captured by an ensemble basd method like Random forest. Moreover, since the best accuracy that was achieved in 3 model was 67.7 percent, this shows that there can be improvement. 
